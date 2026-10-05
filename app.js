@@ -8,7 +8,7 @@ const SAFE_INLINE_ACTIONS = new Set([
   "assignStaffToAssistantManager", "editGroup", "editHoldTransaction", "editLoanRecord", "editRecoveryProposal", "editTeamIncentive",
   "openHoldEntry", "openLoanFolder", "openRecoveryFolderAccount", "removeEmployee",
   "removeHoliday", "saveHistoricalRecovery", "saveInlinePenalty", "saveInlineRecovery",
-  "saveAttendance", "savePerformanceRating", "saveRecurringDeposit", "saveTeamIncentive", "selectEmployeeTeamFolder", "setDirectorRecoveryEntryDate", "setLoanHistoryRecoveryDate", "stageRecoveryPhoto",
+  "saveAttendance", "saveRecurringDeposit", "saveTeamIncentive", "selectEmployeeTeamFolder", "setDirectorRecoveryEntryDate", "setLoanHistoryRecoveryDate", "stageRecoveryPhoto",
   "toggleRecoveryCentre", "viewCustomer", "viewGroup",
 ]);
 
@@ -377,9 +377,7 @@ function toast(message) {
 }
 
 function staticDemoLoginAllowed() {
-  return location.protocol === "file:" ||
-    location.hostname.endsWith(".chatgpt.site") ||
-    location.hostname.endsWith(".github.io");
+  return location.protocol === "file:" || location.hostname.endsWith(".chatgpt.site");
 }
 
 function persistAll() {
@@ -5610,21 +5608,21 @@ function renderEmployeeIncentiveDashboard(panelSelector, expectedRole) {
 
 const WORKING_ATTENDANCE_STATUSES = ["Present", "Half Day", "Late", "Absent"];
 const ATTENDANCE_SALARY_ROLES = ["Manager", "Assistant Manager", "Cashier", "Executive", "Staff"];
-const PERFORMANCE_RATING_ROLES = ["Staff"];
 const RECURRING_DEPOSIT_ROLES = ["Manager", "Assistant Manager", "Staff"];
 const RECURRING_DEPOSIT_ANNUAL_RATE = 0.12;
 const ASSISTANT_PERFORMANCE_FILE_TARGET = 12;
 const ASSISTANT_PERFORMANCE_PER_QUALIFIED_STAFF = 2000;
+const STAFF_PERFORMANCE_TIERS = Object.freeze([
+  { files: 16, amount: 5000 },
+  { files: 14, amount: 4000 },
+  { files: 12, amount: 3000 },
+]);
 
 function workingEligibleEmployees() {
   const order = ATTENDANCE_SALARY_ROLES;
   return employeeAccounts
     .filter((account) => account.active !== false && order.includes(account.designation))
     .sort((a, b) => order.indexOf(a.designation) - order.indexOf(b.designation) || String(a.name).localeCompare(String(b.name), "en", { sensitivity: "base" }));
-}
-
-function performanceEligibleEmployees() {
-  return workingEligibleEmployees().filter((account) => PERFORMANCE_RATING_ROLES.includes(account.designation));
 }
 
 function usesAttendanceSalary(designation) {
@@ -5642,29 +5640,34 @@ function attendanceRecord(loginId, date) {
     String(record.employeeLoginId || "").trim().toLowerCase() === key && record.date === date) || null;
 }
 
-function performanceRatingRecord(loginId, month) {
-  const key = String(loginId || "").trim().toLowerCase();
-  return workingRecords.find((record) => record.kind === "rating" &&
-    String(record.employeeLoginId || "").trim().toLowerCase() === key && record.month === month) || null;
+function staffMonthlyDisbursedFiles(account, month) {
+  if (account?.designation !== "Staff") return 0;
+  const nameKey = String(account.name || "").trim().toLowerCase();
+  const loginKey = String(account.loginId || "").trim().toLowerCase();
+  return loans.filter((loan) => {
+    if (String(loan.disbursedOn || "").slice(0, 7) !== month) return false;
+    const group = groups.find((item) => item.code === loan.groupCode || item.code === loan.code || item.number === loan.groupNumber);
+    const assignedName = String(loan.loanStaff || group?.loanStaff || "").trim().toLowerCase();
+    const assignedLogin = String(loan.loanStaffLoginId || group?.loanStaffLoginId || "").trim().toLowerCase();
+    return (nameKey && assignedName === nameKey) || (loginKey && assignedLogin === loginKey);
+  }).length;
 }
 
-function performanceAmount(designation, stars) {
-  if (!PERFORMANCE_RATING_ROLES.includes(designation)) return 0;
-  return Math.max(0, Math.min(5, Number(stars || 0))) * 1000;
+function staffPerformanceDetails(account, month) {
+  const files = staffMonthlyDisbursedFiles(account, month);
+  const tier = STAFF_PERFORMANCE_TIERS.find((item) => files >= item.files);
+  return { files, amount: staffPerformanceAmount(files), tierFiles: tier?.files || 0 };
+}
+
+function staffPerformanceAmount(files) {
+  const completedFiles = Math.max(0, Number(files || 0));
+  return STAFF_PERFORMANCE_TIERS.find((item) => completedFiles >= item.files)?.amount || 0;
 }
 
 function assistantManagerPerformanceDetails(account, month) {
   if (account?.designation !== "Assistant Manager") return { amount: 0, qualifiedStaff: 0, staff: [] };
   const staff = assignedTeamStaff(account).map((member) => {
-    const nameKey = String(member.name || "").trim().toLowerCase();
-    const loginKey = String(member.loginId || "").trim().toLowerCase();
-    const files = loans.filter((loan) => {
-      if (String(loan.disbursedOn || "").slice(0, 7) !== month) return false;
-      const group = groups.find((item) => item.code === loan.groupCode || item.code === loan.code || item.number === loan.groupNumber);
-      const assignedName = String(loan.loanStaff || group?.loanStaff || "").trim().toLowerCase();
-      const assignedLogin = String(loan.loanStaffLoginId || group?.loanStaffLoginId || "").trim().toLowerCase();
-      return (nameKey && assignedName === nameKey) || (loginKey && assignedLogin === loginKey);
-    }).length;
+    const files = staffMonthlyDisbursedFiles(member, month);
     return { name: member.name, loginId: member.loginId, files, qualified: files >= ASSISTANT_PERFORMANCE_FILE_TARGET };
   });
   const qualifiedStaff = staff.filter((member) => member.qualified).length;
@@ -5758,12 +5761,11 @@ function employeeWorkingStatement(account, month = todayIso().slice(0, 7)) {
       net: daily * payableDays,
     };
   };
-  const rating = performanceRatingRecord(account?.loginId, month);
-  const stars = Math.max(0, Number(rating?.stars || 0));
   const assistantPerformance = assistantManagerPerformanceDetails(account, month);
+  const staffPerformance = staffPerformanceDetails(account, month);
   const performance = account?.designation === "Assistant Manager"
     ? assistantPerformance.amount
-    : performanceAmount(account?.designation, stars);
+    : staffPerformance.amount;
   const incentive = employeeRecoveryIncentiveAmount(account, `${month}-01`, `${month}-31`);
   const basic = component(account?.salary);
   const isManager = account?.designation === "Manager";
@@ -5790,9 +5792,9 @@ function employeeWorkingStatement(account, month = todayIso().slice(0, 7)) {
     business,
     verification,
     assignedStaffCount,
-    stars,
     performance,
     assistantPerformance,
+    staffPerformance,
     incentive,
     salaryBeforeDeposit,
     recurringDeposit,
@@ -5987,38 +5989,6 @@ function saveAttendance(encodedLoginId) {
   toast(`${account.name}: ${status} saved for today.`);
 }
 
-function savePerformanceRating(encodedLoginId, stars) {
-  if (role() !== "Director") {
-    toast("Only the Director can give a performance star rating.");
-    return;
-  }
-  const loginId = decodeURIComponent(encodedLoginId);
-  const account = workingAccount(loginId);
-  if (!account || !PERFORMANCE_RATING_ROLES.includes(account.designation)) return;
-  const maximum = account.designation === "Staff" ? 5 : 3;
-  const value = Math.max(0, Math.min(maximum, Number(stars || 0)));
-  const month = todayIso().slice(0, 7);
-  const loginKey = loginId.toLowerCase();
-  upsertWorkingRecord({
-    id: `RATE-${loginId}-${month}`,
-    kind: "rating",
-    employeeLoginId: loginId,
-    employeeName: account.name,
-    designation: account.designation,
-    month,
-    stars: value,
-    amount: performanceAmount(account.designation, value),
-    updatedBy: currentUser?.loginId || "",
-    updatedAt: new Date().toISOString(),
-  }, (record) => record.kind === "rating" && String(record.employeeLoginId || "").toLowerCase() === loginKey && record.month === month);
-  if (!persistAll()) return;
-  renderMyWorking();
-  renderSalaryManagement();
-  renderSalaryBook();
-  if (role() === "Director" && selectedEmployeeManagementView === "working") renderDirectorTeamWorking();
-  toast(`${account.name}: ${value}-star performance rating saved.`);
-}
-
 function renderCashierAttendance(host) {
   const date = todayIso();
   const employees = workingEligibleEmployees();
@@ -6036,17 +6006,6 @@ function renderCashierAttendance(host) {
   }
 }
 
-function renderDirectorRatings(host) {
-  const month = todayIso().slice(0, 7);
-  const employees = performanceEligibleEmployees();
-  host.innerHTML = `<div class="working-toolbar"><div><p class="eyebrow">MONTH-END PERFORMANCE</p><h3>${escapeHtml(workingMonthLabel(month))}</h3><p>Only the Director can assign or change the monthly star rating.</p></div><span class="working-role-badge">Director rating</span></div><div class="performance-register">${employees.length ? employees.map((account) => {
-    const maximum = account.designation === "Staff" ? 5 : 3;
-    const selected = Number(performanceRatingRecord(account.loginId, month)?.stars || 0);
-    const stars = Array.from({ length: maximum }, (_, index) => index + 1).map((star) => `<button type="button" class="working-star ${star <= selected ? "active" : ""}" onclick="savePerformanceRating('${encodeURIComponent(account.loginId)}',${star})" aria-label="Give ${star} stars">★</button>`).join("");
-    return `<article class="performance-card"><div><b>${escapeHtml(account.name)}</b><span>${escapeHtml(account.designation)} · ${escapeHtml(account.loginId)}</span></div><div class="working-stars">${stars}<button type="button" class="working-clear-rating" onclick="savePerformanceRating('${encodeURIComponent(account.loginId)}',0)">Clear</button></div><strong>${fmt(performanceAmount(account.designation, selected))}</strong></article>`;
-  }).join("") : '<div class="empty">No eligible employees are available for rating.</div>'}</div>`;
-}
-
 function employeeWorkingMarkup(account, eyebrow = "MY WORKING") {
   const statement = employeeWorkingStatement(account, workingCalendarMonth);
   const monthLabel = workingMonthLabel(statement.month);
@@ -6054,13 +6013,12 @@ function employeeWorkingMarkup(account, eyebrow = "MY WORKING") {
   const extended = usesExtendedCompensation(account.designation);
   const isManager = account.designation === "Manager";
   const isAssistantManager = account.designation === "Assistant Manager";
-  const maximumStars = 5;
   const earningDescription = extended
     ? isManager
       ? "Only attendance-based basic salary and approved recovery file incentive apply to a Manager."
       : isAssistantManager
       ? `Verification allowance is ${fmt(VERIFICATION_ALLOWANCE_PER_STAFF)} per assigned staff. Performance is ${fmt(ASSISTANT_PERFORMANCE_PER_QUALIFIED_STAFF)} for each team Staff completing ${ASSISTANT_PERFORMANCE_FILE_TARGET} disbursed files in the month.`
-      : "Salary and allowances are accrued per marked working day. Two half days or three late marks deduct one day's amount."
+      : "Salary and allowances are accrued per marked working day. Performance is automatic: 12 files ₹3,000, 14 files ₹4,000, and 16 files ₹5,000."
     : "Basic salary is divided by 30 and accrued per marked working day. Two half days or three late marks deduct one day's salary.";
   const allowanceRows = isManager
     ? ""
@@ -6069,8 +6027,8 @@ function employeeWorkingMarkup(account, eyebrow = "MY WORKING") {
     : `${componentRow("Recovery allowance", statement.recovery)}${componentRow("Business allowance", statement.business)}`;
   const performanceRow = account.designation === "Assistant Manager"
     ? `<tr><td><b>Performance allowance</b><small>Automatic team-file target</small></td><td colspan="3">${statement.assistantPerformance.qualifiedStaff}/${statement.assignedStaffCount} staff completed ${ASSISTANT_PERFORMANCE_FILE_TARGET} disbursed files</td><td>—</td><td><b>${fmt(statement.performance)}</b></td></tr>`
-    : PERFORMANCE_RATING_ROLES.includes(account.designation)
-      ? `<tr><td><b>Performance</b><small>Director star rating</small></td><td colspan="3"><span class="working-rating-display">${"★".repeat(statement.stars)}${"☆".repeat(Math.max(0, maximumStars - statement.stars))}</span> ${statement.stars}/${maximumStars}</td><td>—</td><td><b>${fmt(statement.performance)}</b></td></tr>`
+    : account.designation === "Staff"
+      ? `<tr><td><b>Performance allowance</b><small>Automatic monthly file target</small></td><td colspan="3">${statement.staffPerformance.files} disbursed files · 12 files ₹3,000 · 14 files ₹4,000 · 16 files ₹5,000</td><td>—</td><td><b>${fmt(statement.performance)}</b></td></tr>`
       : "";
   const recurringDepositRow = recurringDepositEligible(account)
     ? `<tr><td><b>Recurring Deposit</b><small>12% p.a. · monthly compounding estimate</small></td><td>${fmt(statement.recurringDeposit.monthly)}</td><td colspan="2">${statement.recurringDeposit.months} monthly deposit${statement.recurringDeposit.months === 1 ? "" : "s"}</td><td>− ${fmt(statement.recurringDepositDeduction)}</td><td><b>${fmt(statement.recurringDeposit.balance)}</b><small>deposit balance with interest</small></td></tr>`
@@ -6212,12 +6170,12 @@ function updateEmployeeEmploymentFields() {
     if (isTeamLeader) $("#employeeIncentive").value = String(DEFAULT_TEAM_RECOVERY_INCENTIVE_RATE);
   }
   const performanceLabel = $("#employeePerformanceAllowance")?.closest("label");
-  if (performanceLabel?.firstChild) performanceLabel.firstChild.textContent = "Performance (Director star rating)";
+  if (performanceLabel?.firstChild) performanceLabel.firstChild.textContent = "Performance allowance (automatic)";
   if ($("#employeePerformanceAllowance")) {
     $("#employeePerformanceAllowance").readOnly = true;
     $("#employeePerformanceAllowance").value = "0";
   }
-  performanceLabel?.classList.toggle("hidden", !isStaff);
+  performanceLabel?.classList.add("hidden");
   const recoveryLabel = $("#employeePetrolAllowance")?.closest("label");
   if (recoveryLabel?.firstChild) recoveryLabel.firstChild.textContent = "Recovery allowance (₹)";
   const businessLabel = $("#employeeBusinessAllowance")?.closest("label");
@@ -6230,11 +6188,11 @@ function updateEmployeeEmploymentFields() {
     ? isManager
       ? "Enter only the monthly basic salary and incentive paid for each approved recovery file."
       : isStaff
-      ? "Enter monthly salary, recovery and business allowances, plus the incentive rate paid for each approved centre recovery. Performance is assigned by Director star rating."
+      ? "Enter monthly salary, recovery and business allowances, plus the incentive rate paid for each approved centre recovery. Performance is calculated automatically from monthly disbursed files."
       : isTeamLeader
         ? isAssistantManager
           ? `Enter monthly salary, team incentive and recurring deposit. Performance is automatic: ₹${ASSISTANT_PERFORMANCE_PER_QUALIFIED_STAFF.toLocaleString("en-IN")} per Staff who completes ${ASSISTANT_PERFORMANCE_FILE_TARGET} disbursed files.`
-          : "Enter monthly salary, recovery and business allowances, plus the editable team incentive rate per approved staff centre recovery. Director assigns performance stars."
+          : "Enter monthly salary, recovery and business allowances, plus the editable team incentive rate per approved staff centre recovery."
         : "Enter monthly basic salary, allowances and incentive."
     : "Only monthly basic salary is applicable for this designation.";
   $("#employeeRoleNote").textContent = isStaff
@@ -6294,7 +6252,7 @@ function ensureEmployeeManagementViews() {
   }
   const employeePage = $("#employees");
   if (!$("#employeeWorkingView")) {
-    employeePage.insertAdjacentHTML("beforeend", '<div id="employeeWorkingView" class="hidden"><div class="page-intro"><div><h1>My Working</h1><p>Assistant Manager-wise live salary, allowances, incentive and Director performance rating.</p></div></div><div id="employeeWorkingTeamFolders" class="employee-team-folder-host"></div><div id="employeeWorkingTeamDetail" class="employee-team-detail"></div></div><div id="employeeAttendanceView" class="hidden"><div class="page-intro"><div><h1>Staff attendance</h1><p>Open an Assistant Manager folder to review the monthly attendance of the complete personal team.</p></div></div><div id="employeeAttendanceTeamFolders" class="employee-team-folder-host"></div><div id="employeeAttendanceTeamDetail" class="employee-team-detail"></div></div>');
+    employeePage.insertAdjacentHTML("beforeend", '<div id="employeeWorkingView" class="hidden"><div class="page-intro"><div><h1>My Working</h1><p>Assistant Manager-wise live salary, allowances, incentive and automatic file-based performance.</p></div></div><div id="employeeWorkingTeamFolders" class="employee-team-folder-host"></div><div id="employeeWorkingTeamDetail" class="employee-team-detail"></div></div><div id="employeeAttendanceView" class="hidden"><div class="page-intro"><div><h1>Staff attendance</h1><p>Open an Assistant Manager folder to review the monthly attendance of the complete personal team.</p></div></div><div id="employeeAttendanceTeamFolders" class="employee-team-folder-host"></div><div id="employeeAttendanceTeamDetail" class="employee-team-detail"></div></div>');
   }
   if (!$("#employeeSalaryBookView")) {
     employeePage.insertAdjacentHTML("beforeend", '<div id="employeeSalaryBookView" class="hidden"><div class="page-intro salary-book-intro"><div><p class="eyebrow">DIRECTOR REGISTER</p><h1>Salary Book</h1><p>Every employee receives 1 leave per month. Unused leave carries forward month by month.</p></div><label class="salary-book-month">Salary month<input id="salaryBookMonth" type="month"></label></div><div class="stats salary-summary salary-book-summary"><article><span>Employees</span><b id="salaryBookEmployeeCount">0</b><small>eligible salary records</small></article><article><span>Net salary total</span><b id="salaryBookPayrollTotal">₹0</b><small>after recurring deposit</small></article><article><span>Leaves used</span><b id="salaryBookLeaveUsed">0</b><small>used from monthly leave balance</small></article><article><span>Leave balance</span><b id="salaryBookLeaveBalance">0</b><small>unused leaves carried forward</small></article></div><div class="panel table-panel salary-register salary-book-register"><table><thead><tr><th>Employee</th><th>Designation</th><th>Attendance</th><th>Earned basic</th><th>Allowances</th><th>Incentive (separate)</th><th>RD deduction</th><th>Net salary</th><th>Leave credited</th><th>Leave used</th><th>Leave balance</th></tr></thead><tbody id="salaryBookRows"></tbody></table></div></div>');
@@ -6506,11 +6464,10 @@ function renderDirectorTeamWorking() {
   const month = workingCalendarMonth;
   detail.innerHTML = folder ? `${assistantManagerTeamSetupMarkup("working", folder)}<section class="panel employee-team-panel"><div class="employee-team-panel-head"><div><p class="eyebrow">${folder.assistant ? "ASSISTANT MANAGER TEAM" : "OTHER EMPLOYEES"}</p><h3>${escapeHtml(folder.name)}</h3><p>${escapeHtml(workingMonthLabel(month))} live working statement</p></div><b>${accounts.length} records</b></div><div class="table-panel"><table><thead><tr><th>Employee</th><th>Attendance</th><th>Live basic salary</th><th>Allowances</th><th>Performance</th><th>Incentive (separate)</th><th>RD deduction</th><th>Net salary</th></tr></thead><tbody>${accounts.length ? accounts.map((account) => {
     const statement = employeeWorkingStatement(account, month);
-    const maximum = account.designation === "Staff" ? 5 : 3;
     const rating = account.designation === "Assistant Manager"
       ? `<b>${fmt(statement.performance)}</b><small>${statement.assistantPerformance.qualifiedStaff} staff met ${ASSISTANT_PERFORMANCE_FILE_TARGET}-file target</small>`
-      : PERFORMANCE_RATING_ROLES.includes(account.designation)
-      ? `<div class="team-rating-stars">${Array.from({ length: maximum }, (_, index) => index + 1).map((star) => `<button type="button" class="working-star ${star <= statement.stars ? "active" : ""}" onclick="savePerformanceRating('${encodeURIComponent(account.loginId)}',${star})" aria-label="Give ${star} stars">★</button>`).join("")}</div><small>${fmt(statement.performance)}</small>`
+      : account.designation === "Staff"
+      ? `<b>${fmt(statement.performance)}</b><small>${statement.staffPerformance.files} disbursed files · automatic</small>`
       : "—";
     const allowances = account.designation === "Assistant Manager"
       ? `<b>${fmt(statement.verification.net)}</b><small>Verification · ${statement.assignedStaffCount} staff</small>`
@@ -6610,7 +6567,7 @@ function renderSalaryManagement() {
         <td>${attendanceSalary ? `<b>${fmt(statement.basic.net)}</b><small>${fmt(account.salary || 0)} monthly · ${statement.payableDays} payable days</small>` : fmt(account.salary || 0)}</td>
         <td>${account.designation === "Assistant Manager"
           ? `<b>${fmt(statement.performance)}</b><small>${statement.assistantPerformance.qualifiedStaff} staff met ${ASSISTANT_PERFORMANCE_FILE_TARGET}-file target</small>`
-          : PERFORMANCE_RATING_ROLES.includes(account.designation) ? `<b>${statement.stars} star${statement.stars === 1 ? "" : "s"}</b><small>${fmt(statement.performance)}</small>` : "—"}</td>
+          : account.designation === "Staff" ? `<b>${fmt(statement.performance)}</b><small>${statement.staffPerformance.files} disbursed files · automatic</small>` : "—"}</td>
         <td>${extended ? account.designation === "Assistant Manager"
           ? `<b>${fmt(statement.verification.net)}</b><small>${fmt(statement.verification.monthly)} monthly · ${statement.assignedStaffCount} staff</small>`
           : account.designation === "Staff" ? `<b>${fmt(statement.recovery.net)}</b><small>${fmt(account.petrolAllowance || 0)} monthly</small>` : "—" : "—"}</td>
@@ -8067,7 +8024,6 @@ window.removeHoliday = removeHoliday;
 window.removeEmployee = removeEmployee;
 window.changeWorkingCalendarMonth = changeWorkingCalendarMonth;
 window.saveAttendance = saveAttendance;
-window.savePerformanceRating = savePerformanceRating;
 window.assignStaffToAssistantManager = assignStaffToAssistantManager;
 window.saveTeamIncentive = saveTeamIncentive;
 window.saveRecurringDeposit = saveRecurringDeposit;
