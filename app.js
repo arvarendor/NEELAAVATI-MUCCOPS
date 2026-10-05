@@ -377,7 +377,12 @@ function toast(message) {
 }
 
 function staticDemoLoginAllowed() {
-  return location.protocol === "file:" || location.hostname.endsWith(".chatgpt.site");
+  const hostname = String(location.hostname || "").toLowerCase();
+  return (
+    location.protocol === "file:" ||
+    hostname.endsWith(".chatgpt.site") ||
+    hostname.endsWith(".github.io")
+  );
 }
 
 function persistAll() {
