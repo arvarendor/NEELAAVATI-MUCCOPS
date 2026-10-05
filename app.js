@@ -653,7 +653,6 @@ function updateNavigation() {
   $$("[data-go]").forEach((button) => {
     button.style.display = allowed.includes(button.dataset.go) ? "" : "none";
   });
-  $("#downloadAllData").style.display = canManageEmployees() ? "" : "none";
 }
 
 function loanProcessingTotal(loan) {
@@ -7023,34 +7022,6 @@ async function downloadRecoveryDemand(staffName = "", triggerButton = null) {
   }
 }
 
-function downloadAllData() {
-  if (!canManageEmployees()) {
-    toast("Only Director and Manager can download a complete backup.");
-    return;
-  }
-  const backup = {
-    application: "NEELAVATI MUCCOPS",
-    exportedAt: new Date().toISOString(),
-    version: "2.0",
-    groups,
-    loans,
-    cashbook: cashEntries,
-    holidays: bankHolidays,
-    npaRegistry,
-    workingRecords,
-    employees: employeeAccounts.map(({ password: _password, ...account }) => account),
-  };
-  const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `NEELAVATI-MUCCOPS-Backup-${todayIso()}.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  toast("Complete data backup downloaded. Login passwords were excluded for security.");
-}
-
 function cloneImportValue(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -7995,7 +7966,6 @@ function bindEvents() {
     salaryBookMonth = validYearMonth(nextMonth) && nextMonth <= currentMonth ? nextMonth : currentMonth;
     renderSalaryBook();
   });
-  $("#downloadAllData").addEventListener("click", downloadAllData);
 }
 
 window.editGroup = editGroup;
